@@ -1,3 +1,188 @@
-<Solution>
-  <Project Path="ConsoleApp4/ConsoleApp4.csproj" />
-</Solution>
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace PayrollSystem
+{
+    public class Employee
+    {
+        public string FullName { get; set; }
+        public double BaseSalary { get; set; }
+
+        public virtual double CalculateSalary()
+        {
+            return BaseSalary;
+        }
+
+        public override string ToString()
+        {
+            return $"{FullName} (Базова ставка: {BaseSalary:F2}) -> До сплати: {CalculateSalary():F2}";
+        }
+    }
+
+
+    public class Manager : Employee
+    {
+        public int SubordinatesCount { get; set; }
+        public const double BonusPerSubordinate = 1500.0; // Бонус за одного підлеглого
+
+        public override double CalculateSalary()
+        {
+            return BaseSalary + (SubordinatesCount * BonusPerSubordinate);
+        }
+
+        public override string ToString()
+        {
+            return $"[Менеджер] {FullName} ({SubordinatesCount} підлеглих) -> До сплати: {CalculateSalary():F2}";
+        }
+    }
+
+ 
+    public enum DeveloperLevel { Junior, Middle, Senior }
+
+    public class Developer : Employee
+    {
+        public DeveloperLevel Level { get; set; }
+
+        public override double CalculateSalary()
+        {
+            double levelBonus = Level switch
+            {
+                DeveloperLevel.Junior => 0,
+                DeveloperLevel.Middle => 5000,
+                DeveloperLevel.Senior => 10000,
+                _ => 0
+            };
+            return BaseSalary + levelBonus;
+        }
+
+        public override string ToString()
+        {
+            return $"[{Level} Developer] {FullName} -> До сплати: {CalculateSalary():F2}";
+        }
+    }
+
+
+    class Program
+    {
+        static void Main()
+        {
+            Console.OutputEncoding = System.Text.Encoding.UTF8;
+            List<Employee> employees = new List<Employee>();
+
+            while (true)
+            {
+                Console.WriteLine("\n=== Система нарахування зарплати ===");
+                Console.WriteLine("1. Додати менеджера");
+                Console.WriteLine("2. Додати розробника");
+                Console.WriteLine("3. Показати список співробітників");
+                Console.WriteLine("4. Сумарний фонд заробітної плати");
+                Console.WriteLine("5. Співробітники за рівнем зарплати (від найбільшої)");
+                Console.WriteLine("0. Вихід");
+                Console.Write("Оберіть дію: ");
+
+                string choice = Console.ReadLine();
+
+                switch (choice)
+                {
+                    case "0":
+                        Console.WriteLine("Роботу завершено.");
+                        return;
+
+                    case "1":
+                        Manager mgr = new Manager();
+                        mgr.FullName = ReadString("Введіть ПІБ менеджера: ");
+                        mgr.BaseSalary = ReadDouble("Введіть базову зарплату: ", 1);
+                        mgr.SubordinatesCount = ReadInt("Введіть кількість підлеглих: ", 0);
+                        employees.Add(mgr);
+                        Console.WriteLine("Менеджера успішно додано.");
+                        break;
+
+                    case "2":
+                        Developer dev = new Developer();
+                        dev.FullName = ReadString("Введіть ПІБ розробника: ");
+                        dev.BaseSalary = ReadDouble("Введіть базову зарплату: ", 1);
+
+                        Console.WriteLine("Оберіть рівень (0 - Junior, 1 - Middle, 2 - Senior): ");
+                        int levelInput = ReadInt("Ваш вибір: ", 0, 2);
+                        dev.Level = (DeveloperLevel)levelInput;
+
+                        employees.Add(dev);
+                        Console.WriteLine("Розробника успішно додано.");
+                        break;
+
+                    case "3":
+                        if (employees.Count == 0) { Console.WriteLine("Список порожній."); break; }
+                        Console.WriteLine("\n--- Список співробітників ---");
+                        foreach (var emp in employees)
+                        {
+                            Console.WriteLine(emp.ToString()); 
+                        }
+                        break;
+
+                    case "4":
+                        if (employees.Count == 0) { Console.WriteLine("Список порожній."); break; }
+                        double totalPayroll = employees.Sum(e => e.CalculateSalary());
+                        Console.WriteLine($"\nСумарний фонд заробітної плати: {totalPayroll:F2} грн");
+                        break;
+
+                    case "5":
+                        if (employees.Count == 0) { Console.WriteLine("Список порожній."); break; }
+                        var sortedEmployees = employees.OrderByDescending(e => e.CalculateSalary()).ToList();
+
+                        Console.WriteLine("\n--- Топ за зарплатою ---");
+                        foreach (var emp in sortedEmployees)
+                        {
+                            Console.WriteLine(emp.ToString());
+                        }
+                        break;
+
+                    default:
+                        Console.WriteLine("Некоректний вибір. Спробуйте ще раз.");
+                        break;
+                }
+            }
+        }
+
+
+        static string ReadString(string prompt)
+        {
+            while (true)
+            {
+                Console.Write(prompt);
+                string input = Console.ReadLine();
+                if (!string.IsNullOrWhiteSpace(input))
+                {
+                    return input.Trim();
+                }
+                Console.WriteLine("Помилка: рядок не може бути порожнім.");
+            }
+        }
+
+        static double ReadDouble(string prompt, double min = double.MinValue)
+        {
+            while (true)
+            {
+                Console.Write(prompt);
+                if (double.TryParse(Console.ReadLine(), out double value) && value >= min)
+                {
+                    return value;
+                }
+                Console.WriteLine($"Помилка: введіть числове значення не менше ніж {min}.");
+            }
+        }
+
+        static int ReadInt(string prompt, int min = int.MinValue, int max = int.MaxValue)
+        {
+            while (true)
+            {
+                Console.Write(prompt);
+                if (int.TryParse(Console.ReadLine(), out int value) && value >= min && value <= max)
+                {
+                    return value;
+                }
+                Console.WriteLine($"Помилка: введіть ціле число від {min} до {max}.");
+            }
+        }
+    }
+}
