@@ -1,0 +1,307 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Text.Encodings.Web;
+using System.Text.Json;
+using System.Text.Unicode;
+using System.Threading.Tasks;
+
+namespace ServerMonitoring
+{
+    public record LogEntry(string Server, DateTime Time, string Level, string Endpoint, int ResponseMs);
+    public record ServerInfo(string Name, string Region, int SlaMs);
+
+    class Program
+    {
+        static List<LogEntry> _logs = new();
+
+        static readonly List<ServerInfo> _servers = new()
+        {
+            new("web-01", "EU-Central", 200),
+            new("web-02", "EU-West", 250),
+            new("web-03", "US-East", 300),
+            new("web-04", "EU-North", 200) 
+        };
+
+        static readonly JsonSerializerOptions _jsonOptions = new()
+        {
+            WriteIndented = true,
+            Encoder = JavaScriptEncoder.Create(UnicodeRanges.All)
+        };
+
+        static async Task Main()
+        {
+            Console.OutputEncoding = System.Text.Encoding.UTF8;
+            bool isRunning = true;
+
+            while (isRunning)
+            {
+                Console.WriteLine("\n=== Моніторинг вебсерверів ===");
+                Console.WriteLine("0. Вихід");
+                Console.WriteLine("1. Завантажити журнали (одночасно)");
+                Console.WriteLine("2. Завантажити журнали (послідовно)");
+                Console.WriteLine("3. Статистика по серверах");
+                Console.WriteLine("4. Порушення SLA");
+                Console.WriteLine("5. Помилки за ендпоінтом");
+                Console.WriteLine("6. Перевірка сервера (SLA)");
+                Console.WriteLine("7. Зберегти статистику у JSON-файл");
+
+                int choice = ReadInt("Ваш вибір: ", 0, 7);
+
+                isRunning = choice switch
+                {
+                    1 => await HandleLoadAsync(parallel: true),
+                    2 => await HandleLoadAsync(parallel: false),
+                    3 => HandleServerStats(),
+                    4 => HandleSlaViolations(),
+                    5 => HandleErrorsByEndpoint(),
+                    6 => HandleServerCheck(),
+                    7 => await HandleSaveStatsAsync(),
+                    0 => false,
+                    _ => true
+                };
+            }
+        }
+
+        static async Task<List<LogEntry>> LoadLogsAsync(string server, int delayMs)
+        {
+            await Task.Delay(delayMs); 
+
+            var now = DateTime.Now;
+
+            return server switch
+            {
+                "web-01" => new List<LogEntry>
+                {
+                    new("web-01", now.AddMinutes(-10), "INFO", "/api/products", 150),
+                    new("web-01", now.AddMinutes(-8), "WARN", "/api/products", 220),
+                    new("web-01", now.AddMinutes(-5), "ERROR", "/api/orders", 500),
+                    new("web-01", now.AddMinutes(-1), "INFO", "/api/login", 120)
+                },
+                "web-02" => new List<LogEntry>
+                {
+                    new("web-02", now.AddMinutes(-12), "INFO", "/api/login", 180),
+                    new("web-02", now.AddMinutes(-9), "INFO", "/api/orders", 210),
+                    new("web-02", now.AddMinutes(-4), "ERROR", "/api/login", 450),
+                    new("web-02", now.AddMinutes(-2), "INFO", "/api/products", 190)
+                },
+                "web-03" => new List<LogEntry>
+                {
+                    new("web-03", now.AddMinutes(-15), "INFO", "/api/products", 280),
+                    new("web-03", now.AddMinutes(-10), "WARN", "/api/orders", 320),
+                    new("web-03", now.AddMinutes(-3), "ERROR", "/api/products", 600)
+                },
+                "web-04" => new List<LogEntry>(), 
+                _ => new List<LogEntry>()
+            };
+        }
+
+        static async Task<bool> HandleLoadAsync(bool parallel)
+        {
+            Console.WriteLine("Завантаження даних...");
+            var sw = Stopwatch.StartNew();
+            List<LogEntry>[] parts;
+
+            if (parallel)
+            {
+                var tasks = new List<Task<List<LogEntry>>>();
+                int delay = 1000;
+                foreach (var server in _servers)
+                {
+                    tasks.Add(LoadLogsAsync(server.Name, delay));
+                    delay += 500; // web-01: 1000ms, web-02: 1500ms і т.д.
+                }
+                parts = await Task.WhenAll(tasks);
+            }
+            else
+            {
+                parts = new List<LogEntry>[_servers.Count];
+                int delay = 1000;
+                for (int i = 0; i < _servers.Count; i++)
+                {
+                    parts[i] = await LoadLogsAsync(_servers[i].Name, delay);
+                    delay += 500;
+                }
+            }
+
+            sw.Stop();
+            _logs = parts.SelectMany(p => p).ToList();
+            Console.WriteLine($"Усього записів: {_logs.Count}, час завантаження: {sw.ElapsedMilliseconds} мс.");
+            return true;
+        }
+
+        static bool HandleServerStats()
+        {
+            var stats = _servers.GroupJoin(
+                _logs,
+                s => s.Name,
+                l => l.Server,
+                (server, logs) => new
+                {
+                    ServerName = server.Name,
+                    Total = logs.Count(),
+                    Info = logs.Count(l => l.Level == "INFO"),
+                    Warn = logs.Count(l => l.Level == "WARN"),
+                    Error = logs.Count(l => l.Level == "ERROR"),
+                    // Безпечне обчислення, щоб не було винятку на порожній колекції
+                    AvgTime = logs.Any() ? Math.Round(logs.Average(l => l.ResponseMs), 1) : 0,
+                    MaxTime = logs.Any() ? logs.Max(l => l.ResponseMs) : 0
+                }).ToList();
+
+            Console.WriteLine("\n--- Статистика по серверах ---");
+            foreach (var s in stats)
+            {
+                if (s.Total == 0)
+                {
+                    Console.WriteLine($"{s.ServerName}: немає запитів.");
+                }
+                else
+                {
+                    Console.WriteLine($"{s.ServerName} -> Всього: {s.Total} [INFO: {s.Info}, WARN: {s.Warn}, ERROR: {s.Error}]. Час (Avg/Max): {s.AvgTime} мс / {s.MaxTime} мс.");
+                }
+            }
+            return true;
+        }
+
+        static bool HandleSlaViolations()
+        {
+            if (!HasData()) return true;
+
+            // Query-синтаксис з join для з'єднання логів та довідника серверів
+            var violations = (from l in _logs
+                              join s in _servers on l.Server equals s.Name
+                              where l.ResponseMs > s.SlaMs
+                              orderby l.Server, l.ResponseMs descending
+                              select new { l.Server, l.Endpoint, l.Time, l.ResponseMs, s.SlaMs }).ToList();
+
+            Console.WriteLine("\n--- Порушення SLA ---");
+            if (!violations.Any())
+            {
+                Console.WriteLine("Порушень SLA не виявлено.");
+                return true;
+            }
+
+            foreach (var v in violations)
+            {
+                Console.WriteLine($"[{v.Server}] {v.Time:HH:mm:ss} | {v.Endpoint} | {v.ResponseMs} мс (Допустимо: {v.SlaMs} мс)");
+            }
+            return true;
+        }
+
+        static bool HandleErrorsByEndpoint()
+        {
+            if (!HasData()) return true;
+
+            string endpoint = ReadNonEmpty("Введіть ендпоінт (наприклад, /api/login): ");
+
+            var errors = _logs
+                .Where(l => l.Endpoint.Equals(endpoint, StringComparison.OrdinalIgnoreCase) && l.Level == "ERROR")
+                .OrderBy(l => l.Time)
+                .ToList();
+
+            Console.WriteLine($"\n--- Помилки для {endpoint} ---");
+            if (!errors.Any())
+            {
+                Console.WriteLine("Помилок не знайдено.");
+                return true;
+            }
+
+            foreach (var err in errors)
+            {
+                Console.WriteLine($"[{err.Time:HH:mm:ss}] {err.Server}: {err.ResponseMs} мс");
+            }
+            return true;
+        }
+
+        static bool HandleServerCheck()
+        {
+            if (!HasData()) return true;
+
+            string serverName = ReadNonEmpty("Введіть назву сервера (наприклад, web-01): ");
+
+            var serverInfo = _servers.FirstOrDefault(s => s.Name.Equals(serverName, StringComparison.OrdinalIgnoreCase));
+            if (serverInfo == null)
+            {
+                Console.WriteLine("Сервер не знайдено в довіднику.");
+                return true;
+            }
+
+            var serverLogs = _logs.Where(l => l.Server.Equals(serverName, StringComparison.OrdinalIgnoreCase)).ToList();
+
+            // Граничний випадок: якщо логів немає, метод All() поверне true. Запобігаємо цьому перевіркою Any().
+            if (!serverLogs.Any())
+            {
+                Console.WriteLine($"Сервер {serverName}: немає даних для перевірки.");
+                return true;
+            }
+
+            bool allGood = serverLogs.All(l => l.ResponseMs <= serverInfo.SlaMs);
+
+            if (allGood)
+                Console.WriteLine($"Сервер {serverName}: Усі запити вклалися у SLA ({serverInfo.SlaMs} мс).");
+            else
+                Console.WriteLine($"Сервер {serverName}: Є запити, що порушують SLA.");
+
+            return true;
+        }
+
+        static async Task<bool> HandleSaveStatsAsync()
+        {
+            var stats = _servers.GroupJoin(
+                _logs,
+                s => s.Name,
+                l => l.Server,
+                (server, logs) => new
+                {
+                    ServerName = server.Name,
+                    Region = server.Region,
+                    TotalRequests = logs.Count(),
+                    AvgResponseMs = logs.Any() ? Math.Round(logs.Average(l => l.ResponseMs), 1) : 0
+                }).ToList();
+
+            string json = JsonSerializer.Serialize(stats, _jsonOptions);
+
+            try
+            {
+                await File.WriteAllTextAsync("server_stats.json", json);
+                Console.WriteLine("\nСтатистику успішно збережено у файл 'server_stats.json'.");
+            }
+            catch (IOException ex)
+            {
+                Console.WriteLine($"\nПомилка запису у файл: {ex.Message}");
+            }
+            return true;
+        }
+
+        static bool HasData()
+        {
+            if (_logs.Count > 0) return true;
+            Console.WriteLine("Дані не завантажено. Виконайте пункт 1 або 2.");
+            return false;
+        }
+
+        static int ReadInt(string prompt, int min, int max)
+        {
+            while (true)
+            {
+                Console.Write(prompt);
+                if (int.TryParse(Console.ReadLine(), out int value) && value >= min && value <= max)
+                    return value;
+                Console.WriteLine($"Некоректне значення. Введіть число від {min} до {max}.");
+            }
+        }
+
+        static string ReadNonEmpty(string prompt)
+        {
+            while (true)
+            {
+                Console.Write(prompt);
+                string? input = Console.ReadLine();
+                if (!string.IsNullOrWhiteSpace(input)) return input.Trim();
+                Console.WriteLine("Рядок не може бути порожнім.");
+            }
+        }
+    }
+}
