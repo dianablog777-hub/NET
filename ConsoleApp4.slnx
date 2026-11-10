@@ -1,187 +1,289 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 
-namespace PayrollSystem
+namespace ParcelTracker
 {
-    public class Employee
+    // === 1. Елементи предметної області ===
+    public enum ShipmentStatus
     {
-        public string FullName { get; set; }
-        public double BaseSalary { get; set; }
+        Created,
+        InTransit,
+        Arrived,
+        Received
+    }
 
-        public virtual double CalculateSalary()
-        {
-            return BaseSalary;
-        }
+    public interface IShipment
+    {
+        string TrackingNumber { get; }
+        decimal WeightKg { get; }
+        ShipmentStatus Status { get; set; }
+    }
 
-        public override string ToString()
+    public class Parcel : IShipment
+    {
+        public string TrackingNumber { get; }
+        public string Recipient { get; }
+        public decimal WeightKg { get; }
+        public ShipmentStatus Status { get; set; }
+
+        public Parcel(string trackingNumber, string recipient, decimal weightKg)
         {
-            return $"{FullName} (Базова ставка: {BaseSalary:F2}) -> До сплати: {CalculateSalary():F2}";
+            TrackingNumber = trackingNumber;
+            Recipient = recipient;
+            WeightKg = weightKg;
+            Status = ShipmentStatus.Created;
         }
     }
 
-
-    public class Manager : Employee
+    // === 2. Клас EventArgs для події ===
+    public class StatusChangedEventArgs<T> : EventArgs
     {
-        public int SubordinatesCount { get; set; }
-        public const double BonusPerSubordinate = 1500.0; // Бонус за одного підлеглого
+        public T Shipment { get; }
+        public ShipmentStatus OldStatus { get; }
+        public ShipmentStatus NewStatus { get; }
 
-        public override double CalculateSalary()
+        public StatusChangedEventArgs(T shipment, ShipmentStatus oldStatus, ShipmentStatus newStatus)
         {
-            return BaseSalary + (SubordinatesCount * BonusPerSubordinate);
-        }
-
-        public override string ToString()
-        {
-            return $"[Менеджер] {FullName} ({SubordinatesCount} підлеглих) -> До сплати: {CalculateSalary():F2}";
+            Shipment = shipment;
+            OldStatus = oldStatus;
+            NewStatus = newStatus;
         }
     }
 
- 
-    public enum DeveloperLevel { Junior, Middle, Senior }
-
-    public class Developer : Employee
+    // === 3. Узагальнений клас із делегатами та подією ===
+    public class Tracker<T> where T : class, IShipment
     {
-        public DeveloperLevel Level { get; set; }
+        private readonly List<T> _items = new();
+        private Func<T, decimal>? _tariff; // Необов'язкове правило (null = за замовчуванням)
 
-        public override double CalculateSalary()
+        // Подія за стандартним шаблоном .NET
+        public event EventHandler<StatusChangedEventArgs<T>>? StatusChanged;
+
+        public void Add(T item)
         {
-            double levelBonus = Level switch
+            _items.Add(item);
+        }
+
+        public bool AdvanceStatus(string trackingNumber)
+        {
+            // Використання делегата Predicate<T> у методі Find
+            T? item = _items.Find(x => x.TrackingNumber == trackingNumber);
+
+            if (item == null) return false;
+
+            if (item.Status == ShipmentStatus.Received)
             {
-                DeveloperLevel.Junior => 0,
-                DeveloperLevel.Middle => 5000,
-                DeveloperLevel.Senior => 10000,
-                _ => 0
-            };
-            return BaseSalary + levelBonus;
+                return false; // Вже отримано, далі статус не змінюється
+            }
+
+            ShipmentStatus oldStatus = item.Status;
+            item.Status = (ShipmentStatus)((int)item.Status + 1); // Перехід на наступний статус
+
+            // Спричиняємо подію
+            OnStatusChanged(new StatusChangedEventArgs<T>(item, oldStatus, item.Status));
+            return true;
         }
 
-        public override string ToString()
+        public decimal GetCost(T item)
         {
-            return $"[{Level} Developer] {FullName} -> До сплати: {CalculateSalary():F2}";
+            // Якщо _tariff задано, виконуємо його, інакше — логіка за замовчуванням
+            return _tariff?.Invoke(item) ?? (item.WeightKg * 40m);
         }
-    }
 
-
-    class Program
-    {
-        static void Main()
+        public void ForEach(Action<T> action)
         {
-            Console.OutputEncoding = System.Text.Encoding.UTF8;
-            List<Employee> employees = new List<Employee>();
-
-            while (true)
+            foreach (T item in _items)
             {
-                Console.WriteLine("\n=== Система нарахування зарплати ===");
-                Console.WriteLine("1. Додати менеджера");
-                Console.WriteLine("2. Додати розробника");
-                Console.WriteLine("3. Показати список співробітників");
-                Console.WriteLine("4. Сумарний фонд заробітної плати");
-                Console.WriteLine("5. Співробітники за рівнем зарплати (від найбільшої)");
-                Console.WriteLine("0. Вихід");
-                Console.Write("Оберіть дію: ");
-
-                string choice = Console.ReadLine();
-
-                switch (choice)
-                {
-                    case "0":
-                        Console.WriteLine("Роботу завершено.");
-                        return;
-
-                    case "1":
-                        Manager mgr = new Manager();
-                        mgr.FullName = ReadString("Введіть ПІБ менеджера: ");
-                        mgr.BaseSalary = ReadDouble("Введіть базову зарплату: ", 1);
-                        mgr.SubordinatesCount = ReadInt("Введіть кількість підлеглих: ", 0);
-                        employees.Add(mgr);
-                        Console.WriteLine("Менеджера успішно додано.");
-                        break;
-
-                    case "2":
-                        Developer dev = new Developer();
-                        dev.FullName = ReadString("Введіть ПІБ розробника: ");
-                        dev.BaseSalary = ReadDouble("Введіть базову зарплату: ", 1);
-
-                        Console.WriteLine("Оберіть рівень (0 - Junior, 1 - Middle, 2 - Senior): ");
-                        int levelInput = ReadInt("Ваш вибір: ", 0, 2);
-                        dev.Level = (DeveloperLevel)levelInput;
-
-                        employees.Add(dev);
-                        Console.WriteLine("Розробника успішно додано.");
-                        break;
-
-                    case "3":
-                        if (employees.Count == 0) { Console.WriteLine("Список порожній."); break; }
-                        Console.WriteLine("\n--- Список співробітників ---");
-                        foreach (var emp in employees)
-                        {
-                            Console.WriteLine(emp.ToString()); 
-                        }
-                        break;
-
-                    case "4":
-                        if (employees.Count == 0) { Console.WriteLine("Список порожній."); break; }
-                        double totalPayroll = employees.Sum(e => e.CalculateSalary());
-                        Console.WriteLine($"\nСумарний фонд заробітної плати: {totalPayroll:F2} грн");
-                        break;
-
-                    case "5":
-                        if (employees.Count == 0) { Console.WriteLine("Список порожній."); break; }
-                        var sortedEmployees = employees.OrderByDescending(e => e.CalculateSalary()).ToList();
-
-                        Console.WriteLine("\n--- Топ за зарплатою ---");
-                        foreach (var emp in sortedEmployees)
-                        {
-                            Console.WriteLine(emp.ToString());
-                        }
-                        break;
-
-                    default:
-                        Console.WriteLine("Некоректний вибір. Спробуйте ще раз.");
-                        break;
-                }
+                action(item); // Виконання переданої дії
             }
         }
 
+        public void SetTariff(Func<T, decimal>? tariff)
+        {
+            _tariff = tariff;
+        }
 
-        static string ReadString(string prompt)
+        protected virtual void OnStatusChanged(StatusChangedEventArgs<T> e)
+        {
+            StatusChanged?.Invoke(this, e);
+        }
+    }
+
+    // === 4. Головна програма (Program) ===
+    class Program
+    {
+        // Історія статусів (для другого підписника)
+        static readonly List<string> History = new();
+
+        static void Main()
+        {
+            Console.OutputEncoding = System.Text.Encoding.UTF8;
+            var tracker = new Tracker<Parcel>();
+
+            // ПІДПИСНИКИ НА ПОДІЮ:
+            // 1. Іменований метод (SMS повідомлення одержувачу)
+            tracker.StatusChanged += SendSms;
+
+            // 2. Лямбда-вираз (Запис в історію)
+            tracker.StatusChanged += (sender, e) =>
+            {
+                History.Add($"[{DateTime.Now:HH:mm:ss}] {e.Shipment.TrackingNumber}: {e.OldStatus} -> {e.NewStatus}");
+            };
+
+            // Заповнення початкових даних наперед у коді
+            tracker.Add(new Parcel("UA-1001", "Олена", 2.0m));
+            tracker.Add(new Parcel("UA-1002", "Іван", 0.5m));
+            tracker.Add(new Parcel("UA-1003", "Марія", 5.0m));
+
+            bool isRunning = true;
+            while (isRunning)
+            {
+                Console.WriteLine("\n=== Меню Відстеження Посилок ===");
+                Console.WriteLine("0. Вихід");
+                Console.WriteLine("1. Додати посилку");
+                Console.WriteLine("2. Показати посилки");
+                Console.WriteLine("3. Оновити статус посилки");
+                Console.WriteLine("4. Обрати тариф");
+                Console.WriteLine("5. Показати історію статусів");
+
+                int choice = ReadInt("Ваш вибір: ", 0, 5);
+
+                isRunning = choice switch
+                {
+                    1 => HandleAdd(tracker),
+                    2 => HandleShowAll(tracker),
+                    3 => HandleAdvance(tracker),
+                    4 => HandleChooseTariff(tracker),
+                    5 => HandleShowHistory(),
+                    0 => false,
+                    _ => true
+                };
+            }
+            Console.WriteLine("Програму завершено.");
+        }
+
+        // Обробник події — іменований метод
+        static void SendSms(object? sender, StatusChangedEventArgs<Parcel> e)
+        {
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine($"\n[SMS для {e.Shipment.Recipient}]: Посилка {e.Shipment.TrackingNumber} перейшла у статус {e.NewStatus}.");
+
+            // Завдання за бажанням: генерація коду і вартості при прибутті (Arrived)
+            if (e.NewStatus == ShipmentStatus.Arrived && sender is Tracker<Parcel> tracker)
+            {
+                decimal cost = tracker.GetCost(e.Shipment);
+                int code = Random.Shared.Next(1000, 10000);
+                Console.WriteLine($"[SMS для {e.Shipment.Recipient}]: До сплати {cost:F2} грн. Код отримання: {code}");
+            }
+            Console.ResetColor();
+        }
+
+        // --- Методи для пунктів меню ---
+
+        static bool HandleAdd(Tracker<Parcel> tracker)
+        {
+            string number = ReadNonEmpty("Номер посилки (напр. UA-1004): ");
+            string recipient = ReadNonEmpty("Ім'я одержувача: ");
+            decimal weight = ReadDecimal("Вага (кг): ", 0.1m);
+
+            tracker.Add(new Parcel(number, recipient, weight));
+            Console.WriteLine("Посилку успішно додано.");
+            return true;
+        }
+
+        static bool HandleShowAll(Tracker<Parcel> tracker)
+        {
+            Console.WriteLine("\n--- Список посилок ---");
+            // Лямбда-вираз для Action<T> у ForEach
+            tracker.ForEach(p =>
+            {
+                decimal cost = tracker.GetCost(p);
+                Console.WriteLine($"{p.TrackingNumber} (Одержувач: {p.Recipient}) - Статус: {p.Status} | Вага: {p.WeightKg} кг | Вартість: {cost:F2} грн");
+            });
+            return true;
+        }
+
+        static bool HandleAdvance(Tracker<Parcel> tracker)
+        {
+            string number = ReadNonEmpty("Введіть номер посилки: ");
+            if (!tracker.AdvanceStatus(number))
+            {
+                Console.WriteLine("Увага: Посилку не знайдено або вона вже у кінцевому статусі (Received).");
+            }
+            return true;
+        }
+
+        static bool HandleChooseTariff(Tracker<Parcel> tracker)
+        {
+            Console.WriteLine("Оберіть тариф:");
+            Console.WriteLine("0 - Стандартний (40 грн/кг)");
+            Console.WriteLine("1 - Фіксований (70 грн)");
+            Console.WriteLine("2 - Експрес (100 грн + 60 грн/кг)");
+            Console.WriteLine("3 - Акційний (-20% від стандарту)");
+
+            // Зміна поведінки через замикання лямбда-виразів
+            Func<Parcel, decimal>? tariff = ReadInt("Ваш вибір: ", 0, 3) switch
+            {
+                1 => p => 70m,
+                2 => p => 100m + (p.WeightKg * 60m),
+                3 => p => (p.WeightKg * 40m) * 0.8m,
+                _ => null // Скидання до стандартного (за замовчуванням)
+            };
+
+            tracker.SetTariff(tariff);
+            Console.WriteLine("Тариф успішно оновлено.");
+            return true;
+        }
+
+        static bool HandleShowHistory()
+        {
+            Console.WriteLine("\n--- Історія статусів ---");
+            if (History.Count == 0)
+            {
+                Console.WriteLine("Історія порожня.");
+            }
+            else
+            {
+                foreach (var record in History)
+                {
+                    Console.WriteLine(record);
+                }
+            }
+            return true;
+        }
+
+        // --- Допоміжні методи введення ---
+
+        static string ReadNonEmpty(string prompt)
         {
             while (true)
             {
                 Console.Write(prompt);
-                string input = Console.ReadLine();
-                if (!string.IsNullOrWhiteSpace(input))
-                {
-                    return input.Trim();
-                }
+                string? input = Console.ReadLine();
+                if (!string.IsNullOrWhiteSpace(input)) return input.Trim();
                 Console.WriteLine("Помилка: рядок не може бути порожнім.");
             }
         }
 
-        static double ReadDouble(string prompt, double min = double.MinValue)
-        {
-            while (true)
-            {
-                Console.Write(prompt);
-                if (double.TryParse(Console.ReadLine(), out double value) && value >= min)
-                {
-                    return value;
-                }
-                Console.WriteLine($"Помилка: введіть числове значення не менше ніж {min}.");
-            }
-        }
-
-        static int ReadInt(string prompt, int min = int.MinValue, int max = int.MaxValue)
+        static int ReadInt(string prompt, int min, int max)
         {
             while (true)
             {
                 Console.Write(prompt);
                 if (int.TryParse(Console.ReadLine(), out int value) && value >= min && value <= max)
-                {
                     return value;
-                }
                 Console.WriteLine($"Помилка: введіть ціле число від {min} до {max}.");
+            }
+        }
+
+        static decimal ReadDecimal(string prompt, decimal min)
+        {
+            while (true)
+            {
+                Console.Write(prompt);
+                if (decimal.TryParse(Console.ReadLine(), out decimal value) && value >= min)
+                    return value;
+                Console.WriteLine($"Помилка: введіть число не менше {min}.");
             }
         }
     }
